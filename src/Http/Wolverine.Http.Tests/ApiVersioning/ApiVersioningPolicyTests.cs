@@ -282,7 +282,42 @@ public class ApiVersioningPolicyTests
         chain.RoutePattern!.RawText.ShouldBe(routeAfterFirstApply);
     }
 
-    // 16 — Custom document name strategy drives group name
+    // 16b — Without URL-segment prefix and without a non-URL version source, two clones at
+    // the same route would collide unconditionally — fail fast with a startup error.
+    [Fact]
+    public void disabled_url_segment_without_non_url_source_throws_when_clones_collide()
+    {
+        var opts = new WolverineApiVersioningOptions { UrlSegmentPrefix = null };
+        var policy = new ApiVersioningPolicy(opts);
+        var chain1 = HttpChain.ChainFor<OrdersV1Handler>(x => x.Get());
+        var chain2 = HttpChain.ChainFor<OrdersV2Handler>(x => x.Get());
+
+        var ex = Should.Throw<InvalidOperationException>(() => Apply(policy, chain1, chain2));
+        ex.Message.ShouldContain("/orders");
+        ex.Message.ShouldContain("1.0");
+        ex.Message.ShouldContain("2.0");
+        ex.Message.ShouldContain("ReadVersionFromHeader");
+    }
+
+    // 16c — Same setup but with a header source configured: no startup error; routes stay
+    // unchanged so the matcher policy can disambiguate at request time.
+    [Fact]
+    public void disabled_url_segment_with_header_source_does_not_throw_and_keeps_routes()
+    {
+        var opts = new WolverineApiVersioningOptions { UrlSegmentPrefix = null };
+        opts.ReadVersionFromHeader("X-Api-Version");
+
+        var policy = new ApiVersioningPolicy(opts);
+        var chain1 = HttpChain.ChainFor<OrdersV1Handler>(x => x.Get());
+        var chain2 = HttpChain.ChainFor<OrdersV2Handler>(x => x.Get());
+
+        Should.NotThrow(() => Apply(policy, chain1, chain2));
+
+        chain1.RoutePattern!.RawText.ShouldBe("/orders");
+        chain2.RoutePattern!.RawText.ShouldBe("/orders");
+    }
+
+    // 17 — Custom document name strategy drives group name
     [Fact]
     public void custom_document_name_strategy_drives_group_name()
     {

@@ -11,8 +11,13 @@ versioning entirely through its own `IHttpPolicy` pipeline, so there is no confl
 `AddApiVersioning()` registration, and no additional ASP.NET Core middleware is needed.
 
 ::: info
-This release supports **URL-segment versioning** (e.g. `/v1/...`, `/v2/...`) and multi-version handlers
-via repeated `[ApiVersion]` attributes or `[MapToApiVersion]`. See [Multi-version handlers](#multi-version-handlers).
+Two version-source flavours are supported:
+- **URL-segment versioning** (e.g. `/v1/...`, `/v2/...`) — the default. See [URL-Segment Versioning](#url-segment-versioning).
+- **Header / query-string versioning** — opt-in via `ReadVersionFromHeader(...)` / `ReadVersionFromQueryString(...)`.
+  See [Header / Query-String Versioning](#header-query-string-versioning-badge-type-tip-text-5-38).
+
+Both can be combined with multi-version handlers via repeated `[ApiVersion]` attributes or `[MapToApiVersion]`.
+See [Multi-version handlers](#multi-version-handlers).
 :::
 
 ## Quick Start
@@ -213,6 +218,86 @@ opts.UseApiVersioning(v =>
 
 For date-based versions where `MajorVersion` is `null`, the default formatter falls back to `ApiVersion.ToString()`,
 which may include hyphens (e.g. `2024-01-01`). Override the formatter if your URL scheme needs a different shape.
+
+## Header / Query-String Versioning <Badge type="tip" text="5.38" />
+
+In addition to URL-segment versioning, Wolverine can read the requested API version from one or more HTTP
+headers or query-string parameters at request time. When configured, multiple endpoints can share the same
+route — Wolverine's `ApiVersionEndpointSelectorPolicy` reads the request and picks the right clone.
+
+### Header source
+
+```csharp
+opts.UseApiVersioning(v =>
+{
+    // Turn off URL-segment versioning so /orders is shared across versions.
+    v.UrlSegmentPrefix = null;
+    v.ReadVersionFromHeader("X-Api-Version");
+});
+```
+
+With this configuration a request to `/orders` with header `X-Api-Version: 2.0` is routed to the `v2.0`
+handler at `/orders`; a request without the header resolves to a 404 unless an unversioned sibling exists
+or `AssumeDefaultVersionWhenUnspecified` is enabled (see below).
+
+### Query-string source
+
+```csharp
+opts.UseApiVersioning(v =>
+{
+    v.UrlSegmentPrefix = null;
+    v.ReadVersionFromQueryString("api-version");
+});
+```
+
+`/orders?api-version=2.0` now reaches the v2 handler.
+
+### Combining sources
+
+Call both helpers to accept either form. When both supply a value the policy treats them as a single value
+**only if they agree** — disagreement is treated like a malformed input and the request fails closed
+(versioned candidates are invalidated). This matches the spirit of the
+`Asp.Versioning.Http` composite-reader contract.
+
+```csharp
+opts.UseApiVersioning(v =>
+{
+    v.UrlSegmentPrefix = null;
+    v.ReadVersionFromHeader("X-Api-Version");
+    v.ReadVersionFromQueryString("api-version");
+});
+```
+
+### Coexisting with URL-segment versioning
+
+The URL prefix and the non-URL sources are not mutually exclusive. Leaving `UrlSegmentPrefix` at its default
+(`v{version}`) and adding `ReadVersionFromHeader(...)` is legal: each route still gets a per-version URL,
+and the matcher policy is effectively a no-op because URL routing has already narrowed candidates down to
+one per route. Drop the URL prefix only when you actually want the same route to serve every version.
+
+### Default version when nothing is supplied
+
+By default an unversioned request is rejected (404). Opt into an implicit version with:
+
+```csharp
+opts.UseApiVersioning(v =>
+{
+    v.UrlSegmentPrefix = null;
+    v.ReadVersionFromHeader("X-Api-Version");
+    v.AssumeDefaultVersionWhenUnspecified = true;
+    v.DefaultVersion = new ApiVersion(1, 0);
+});
+```
+
+This is independent of `UnversionedPolicy.AssignDefault` — the former drives request-time fallback, the
+latter drives bootstrap-time handling of endpoints that don't declare `[ApiVersion]`.
+
+### Startup safety check
+
+If `UrlSegmentPrefix` is `null` **and** no non-URL source is configured, two clones at the same route would
+collide unconditionally. Wolverine fails fast at startup with an actionable error pointing to either
+`ReadVersionFromHeader`, `ReadVersionFromQueryString`, or restoring a `UrlSegmentPrefix` that contains the
+`{version}` token. This avoids the much worse UX of an `AmbiguousMatchException` on the first request.
 
 ## Unversioned-Endpoint Policy
 

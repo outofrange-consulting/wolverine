@@ -191,6 +191,18 @@ public static class WolverineHttpEndpointRouteBuilderExtensions
             return new ApiVersionHeaderWriter(versioningOptions);
         });
 
+        // Endpoint selector policy that disambiguates clones sharing the same route when a
+        // non-URL version source (header / query string) is configured. AppliesToEndpoints() is
+        // metadata-driven, so registering it unconditionally is a no-op for apps that never call
+        // UseApiVersioning(). The factory snapshots the options instance lazily so configuration
+        // performed in MapWolverineEndpoints' configure callback is honoured.
+        services.AddSingleton<MatcherPolicy>(sp =>
+        {
+            var httpOptions = sp.GetRequiredService<WolverineHttpOptions>();
+            var versioningOptions = httpOptions.ApiVersioning ?? new WolverineApiVersioningOptions();
+            return new ApiVersionEndpointSelectorPolicy(versioningOptions);
+        });
+
         services.ConfigureWolverine(opts =>
         {
             opts.CodeGeneration.Sources.Add(new NullableHttpContextSource());

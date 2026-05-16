@@ -49,6 +49,7 @@ internal sealed class ApiVersioningPolicy : IHttpPolicy
         ApplyOptionsPolicies(chains);
         DetectDuplicateRoutes(chains);
         RewriteRoutes(chains);
+        AssertVersionSourceCoverage(chains);
         AttachMetadata(chains);
         AttachHeaderState(chains);
     }
@@ -261,6 +262,45 @@ internal sealed class ApiVersioningPolicy : IHttpPolicy
     {
         var versionSegment = _options.UrlSegmentVersionFormatter(version);
         return "/" + _options.UrlSegmentPrefix!.Replace("{version}", versionSegment).TrimStart('/');
+    }
+
+    /// <summary>
+    /// Step E.5 — guarantee every versioned route has a way to disambiguate at request time.
+    /// After <see cref="RewriteRoutes"/> has run, every chain's <see cref="HttpChain.RoutePattern"/>
+    /// is the route ASP.NET Core's matcher will see. If two or more chains share the same
+    /// <c>(verb, post-rewrite-route)</c> we need at least one selector axis:
+    /// <list type="bullet">
+    ///   <item><description>URL-segment versioning rewrites every clone's route to a distinct path,
+    ///     so siblings land at <c>/v1/orders</c> vs <c>/v2/orders</c> and never collide here.</description></item>
+    ///   <item><description>Header- or query-string versioning leaves the route alone; the matcher
+    ///     policy <see cref="ApiVersionEndpointSelectorPolicy"/> reads the request to pick the right clone.</description></item>
+    ///   <item><description>Neither configured ⇒ ASP.NET Core's routing throws <c>AmbiguousMatchException</c>
+    ///     at the first request — which is a much worse UX than a startup error.</description></item>
+    /// </list>
+    /// </summary>
+    private void AssertVersionSourceCoverage(IReadOnlyList<HttpChain> chains)
+    {
+        if (_options.UrlSegmentPrefix is not null) return;
+        if (_options.HasNonUrlVersionSource) return;
+
+        var collisions = chains
+            .Where(c => c.ApiVersion is not null && c.RoutePattern is not null)
+            .GroupBy(c => (
+                Verb: c.HttpMethods.FirstOrDefault() ?? "",
+                Route: c.RoutePattern!.RawText ?? ""))
+            .Where(g => g.Select(c => c.ApiVersion!).Distinct().Count() > 1)
+            .ToList();
+
+        if (collisions.Count == 0) return;
+
+        var first = collisions[0];
+        var versions = string.Join(", ", first.Select(c => c.ApiVersion!.ToString()).Distinct());
+        throw new InvalidOperationException(
+            $"Endpoint [{first.Key.Verb}] '{first.Key.Route}' is declared for multiple API versions " +
+            $"({versions}) but the configured WolverineApiVersioningOptions has no way to disambiguate them. " +
+            "Set UrlSegmentPrefix to a template containing '{version}' (the default), or call " +
+            "options.ReadVersionFromHeader(...) / ReadVersionFromQueryString(...) to enable request-time " +
+            "version selection.");
     }
 
     /// <summary>Step F — attach group-name, ApiVersionMetadata, and ensure unique endpoint names.
