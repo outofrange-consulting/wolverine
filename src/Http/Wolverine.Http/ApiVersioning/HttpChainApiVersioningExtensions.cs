@@ -8,7 +8,7 @@ public static class HttpChainApiVersioningExtensions
     /// <summary>Mark this chain as deprecated by attaching a default <see cref="DeprecationPolicy"/> with no scheduled date or links.</summary>
     public static HttpChain MarkDeprecated(this HttpChain chain)
     {
-        chain.DeprecationPolicy ??= new DeprecationPolicy();
+        chain.DeprecationPolicy ??= new WolverineDeprecationPolicy();
         return chain;
     }
 }

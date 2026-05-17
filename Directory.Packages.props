@@ -4,7 +4,21 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageVersion Include="Alba" Version="8.5.2" />
-    <PackageVersion Include="Asp.Versioning.Abstractions" Version="[10.0.0,11.0.0)" />
+    <!--
+      Asp.Versioning is pinned per target framework because the package's release cadence does not
+      line up with the .NET TFMs Wolverine.Http multi-targets (net9.0;net10.0):
+        - net10 takes the current 10.x line (10.x is net10-only).
+        - net9 takes the last 8.x release; 8.1.1 ships a net8.0 asset that rolls forward to net9,
+          and there is no 9.x release of the package.
+      Abstractions is pinned to the matching major in each branch so its binary contract lines up
+      with the Http assembly compiled against it (8.1.1 references the v8 ISunsetPolicyManager type
+      that was removed in v10 — mixing v8 Http with v10 Abstractions throws TypeLoadException at
+      AddApiVersioning()). The only v10-only abstraction Wolverine exposed (DeprecationPolicy) is
+      mirrored by the first-party WolverineDeprecationPolicy so the source compiles against both. -->
+    <PackageVersion Include="Asp.Versioning.Abstractions" Version="[8.1.0,9.0.0)" Condition="'$(TargetFramework)' == 'net9.0'" />
+    <PackageVersion Include="Asp.Versioning.Abstractions" Version="[10.0.0,11.0.0)" Condition="'$(TargetFramework)' != 'net9.0'" />
+    <PackageVersion Include="Asp.Versioning.Http" Version="[8.1.1,9.0.0)" Condition="'$(TargetFramework)' == 'net9.0'" />
+    <PackageVersion Include="Asp.Versioning.Http" Version="[10.0.0,11.0.0)" Condition="'$(TargetFramework)' != 'net9.0'" />
     <PackageVersion Include="AWSSDK.S3" Version="4.0.22.1" />
     <PackageVersion Include="AWSSDK.SimpleNotificationService" Version="4.0.2.14" />
     <PackageVersion Include="AWSSDK.SQS" Version="4.0.2.14" />

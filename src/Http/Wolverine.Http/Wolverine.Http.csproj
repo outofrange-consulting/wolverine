@@ -21,6 +21,14 @@
         <ProjectReference Include="..\..\Wolverine\Wolverine.csproj"/>
         <PackageReference Include="Asp.Versioning.Abstractions"/>
         <!--
+          Asp.Versioning.Http supplies the ApiVersionMatcherPolicy and the header / query-string
+          IApiVersionReader pipeline that Wolverine delegates endpoint selection to. The version is
+          pinned per target framework in Directory.Packages.props: net10 takes the current 10.x
+          line, net9 takes the last 8.x release (8.1.1 ships a net8.0 asset that rolls forward to
+          net9; there is no 9.x release of the package, and 10.x is net10-only).
+        -->
+        <PackageReference Include="Asp.Versioning.Http"/>
+        <!--
           Emits the source-generated JasperFx DiscoveredCommands manifest for this
           assembly so the 'openapi' command (and any future Wolverine.Http commands)
           are discovered without a reflective assembly scan, keeping the AOT/trim

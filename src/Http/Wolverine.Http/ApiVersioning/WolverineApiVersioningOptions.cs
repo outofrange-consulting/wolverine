@@ -41,10 +41,52 @@ public sealed class WolverineApiVersioningOptions
     public UnversionedPolicy UnversionedPolicy { get; set; } = UnversionedPolicy.PassThrough;
 
     /// <summary>
-    /// Used when <see cref="UnversionedPolicy"/> is <see cref="UnversionedPolicy.AssignDefault"/>.
-    /// Required in that mode; otherwise ignored.
+    /// Used when <see cref="UnversionedPolicy"/> is <see cref="UnversionedPolicy.AssignDefault"/>
+    /// or <see cref="AssumeDefaultVersionWhenUnspecified"/> is <see langword="true"/>.
     /// </summary>
     public ApiVersion? DefaultVersion { get; set; }
+
+    /// <summary>
+    /// HTTP header names that <c>Asp.Versioning.Http</c>'s matcher policy reads at request time
+    /// when picking among clones that share a route. Bridged into
+    /// <see cref="Asp.Versioning.HeaderApiVersionReader"/> by
+    /// <see cref="ConfigureAspVersioningFromWolverine"/>.
+    /// </summary>
+    public IList<string> VersionHeaderNames { get; } = new List<string>();
+
+    /// <summary>
+    /// Query-string parameter names, parallel to <see cref="VersionHeaderNames"/>. Bridged into
+    /// <see cref="Asp.Versioning.QueryStringApiVersionReader"/>.
+    /// </summary>
+    public IList<string> VersionQueryStringNames { get; } = new List<string>();
+
+    /// <summary>
+    /// Forwarded verbatim to
+    /// <see cref="Asp.Versioning.ApiVersioningOptions.AssumeDefaultVersionWhenUnspecified"/>.
+    /// </summary>
+    public bool AssumeDefaultVersionWhenUnspecified { get; set; }
+
+    /// <summary>Convenience helper that adds <paramref name="headerName"/> to <see cref="VersionHeaderNames"/>.</summary>
+    public WolverineApiVersioningOptions ReadVersionFromHeader(string headerName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(headerName);
+        if (!VersionHeaderNames.Contains(headerName, StringComparer.OrdinalIgnoreCase))
+            VersionHeaderNames.Add(headerName);
+        return this;
+    }
+
+    /// <summary>Convenience helper that adds <paramref name="parameterName"/> to <see cref="VersionQueryStringNames"/>.</summary>
+    public WolverineApiVersioningOptions ReadVersionFromQueryString(string parameterName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(parameterName);
+        if (!VersionQueryStringNames.Contains(parameterName, StringComparer.OrdinalIgnoreCase))
+            VersionQueryStringNames.Add(parameterName);
+        return this;
+    }
+
+    /// <summary>True when at least one non-URL version source (header or query string) is configured.</summary>
+    internal bool HasNonUrlVersionSource =>
+        VersionHeaderNames.Count > 0 || VersionQueryStringNames.Count > 0;
 
     /// <summary>
     /// Emit the <c>api-supported-versions</c> response header on every versioned endpoint.
@@ -70,7 +112,7 @@ public sealed class WolverineApiVersioningOptions
     /// Per-version deprecation policies. Populated via <see cref="Deprecate(ApiVersion)"/> or
     /// <see cref="Deprecate(string)"/>.
     /// </summary>
-    internal Dictionary<ApiVersion, DeprecationPolicy> DeprecationPolicies { get; } = new();
+    internal Dictionary<ApiVersion, WolverineDeprecationPolicy> DeprecationPolicies { get; } = new();
 
     /// <summary>Configure a sunset policy for the given version.</summary>
     /// <param name="version">The API version to configure a sunset policy for.</param>

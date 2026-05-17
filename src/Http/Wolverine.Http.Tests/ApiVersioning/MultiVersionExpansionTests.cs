@@ -216,11 +216,19 @@ public class MultiVersionExpansionTests
 
             var model = versionMeta!.Map(ApiVersionMapping.Explicit);
 
-            // Each clone declares only its own version, but advertises both as supported so the
-            // api-supported-versions response header reports the full sibling set.
+            // Per-chain ApiVersionMetadata now declares only its own version (Supported = Declared)
+            // because the Asp.Versioning.Http matcher policy treats anything in SupportedApiVersions
+            // as a valid match — embedding the sibling union here would make every clone match
+            // every version. The sibling union now lives on ApiVersionEndpointHeaderState.
             model.DeclaredApiVersions.ShouldBe(new[] { chain.ApiVersion! });
-            model.SupportedApiVersions.OrderBy(v => v).ShouldBe(allVersions);
-            model.ImplementedApiVersions.OrderBy(v => v).ShouldBe(allVersions);
+            model.SupportedApiVersions.ShouldBe(new[] { chain.ApiVersion! });
+            model.ImplementedApiVersions.ShouldBe(new[] { chain.ApiVersion! });
+
+            // Sibling union assertion moves to ApiVersionEndpointHeaderState, which is what the
+            // header writer consults at request time.
+            var headerState = endpoint.Metadata.GetMetadata<ApiVersionEndpointHeaderState>();
+            headerState.ShouldNotBeNull();
+            headerState!.SiblingSupportedVersions!.OrderBy(v => v).ShouldBe(allVersions);
         }
     }
 
@@ -239,8 +247,24 @@ public class MultiVersionExpansionTests
             var endpoint = chain.BuildEndpoint(RouteWarmup.Lazy);
             var model = endpoint.Metadata.GetMetadata<ApiVersionMetadata>()!.Map(ApiVersionMapping.Explicit);
 
-            model.SupportedApiVersions.ShouldBe(new[] { new ApiVersion(2, 0) });
-            model.DeprecatedApiVersions.ShouldBe(new[] { new ApiVersion(1, 0) });
+            // Each chain's per-clone model carries only its own version on the correct axis:
+            // v1 lands in DeprecatedApiVersions because of [ApiVersion("1.0", Deprecated = true)],
+            // v2 lands in SupportedApiVersions. Cross-clone reporting lives on ApiVersionEndpointHeaderState.
+            if (chain.ApiVersion == new ApiVersion(1, 0))
+            {
+                model.SupportedApiVersions.ShouldBeEmpty();
+                model.DeprecatedApiVersions.ShouldBe(new[] { new ApiVersion(1, 0) });
+            }
+            else
+            {
+                model.SupportedApiVersions.ShouldBe(new[] { new ApiVersion(2, 0) });
+                model.DeprecatedApiVersions.ShouldBeEmpty();
+            }
+
+            var headerState = endpoint.Metadata.GetMetadata<ApiVersionEndpointHeaderState>();
+            headerState.ShouldNotBeNull();
+            headerState!.SiblingSupportedVersions!.ShouldBe(new[] { new ApiVersion(2, 0) });
+            headerState.SiblingDeprecatedVersions!.ShouldBe(new[] { new ApiVersion(1, 0) });
         }
     }
 
@@ -377,12 +401,18 @@ public class MultiVersionExpansionTests
         foreach (var chain in chains)
         {
             var endpoint = chain.BuildEndpoint(RouteWarmup.Lazy);
-            var model = endpoint.Metadata.GetMetadata<ApiVersionMetadata>()!.Map(ApiVersionMapping.Explicit);
 
-            // SupportedApiVersions is the union of every sibling at (GET, /vN/inventory) regardless
-            // of which handler class produced the clone. ImplementedApiVersions therefore contains
-            // every version any sibling serves at that logical route.
-            model.ImplementedApiVersions.OrderBy(v => v).ShouldBe(allVersions);
+            // The sibling union (cross-class, at the same logical route) lives on
+            // ApiVersionEndpointHeaderState rather than on ApiVersionMetadata. ImplementedApiVersions
+            // on the per-chain model carries only its own version so the Asp.Versioning.Http
+            // matcher policy doesn't treat every clone as a valid match for every requested version.
+            var headerState = endpoint.Metadata.GetMetadata<ApiVersionEndpointHeaderState>();
+            headerState.ShouldNotBeNull();
+            (headerState!.SiblingSupportedVersions ?? Array.Empty<ApiVersion>())
+                .Concat(headerState.SiblingDeprecatedVersions ?? Array.Empty<ApiVersion>())
+                .Distinct()
+                .OrderBy(v => v)
+                .ShouldBe(allVersions);
         }
     }
 }

@@ -273,7 +273,7 @@ public partial class HttpChain : Chain<HttpChain, ModifyHttpChainAttribute>, ICo
     public SunsetPolicy? SunsetPolicy { get; set; }
 
     /// <summary>Deprecation policy for this endpoint's API version. Populated by configuration during app startup.</summary>
-    public DeprecationPolicy? DeprecationPolicy { get; set; }
+    public Wolverine.Http.ApiVersioning.WolverineDeprecationPolicy? DeprecationPolicy { get; set; }
 
     /// <summary>Fluent helper to declare an API version on this chain. Returns this chain.</summary>
     public HttpChain HasApiVersion(ApiVersion version)
@@ -318,7 +318,7 @@ public partial class HttpChain : Chain<HttpChain, ModifyHttpChainAttribute>, ICo
 
         if (isDeprecated)
         {
-            clone.DeprecationPolicy ??= new DeprecationPolicy();
+            clone.DeprecationPolicy ??= new Wolverine.Http.ApiVersioning.WolverineDeprecationPolicy();
         }
 
         // Strip [ApiVersion] / [MapToApiVersion] attributes that don't match this clone's version.

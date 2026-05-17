@@ -18,7 +18,7 @@ public class WolverineApiVersioningSwaggerOperationFilterTests
         var state = new ApiVersionEndpointHeaderState(
             new ApiVersion(1, 0),
             Sunset: null,
-            Deprecation: new DeprecationPolicy());
+            Deprecation: new WolverineDeprecationPolicy());
         var metadata = new List<object> { state };
         var operation = MakeOperation();
 
@@ -47,7 +47,7 @@ public class WolverineApiVersioningSwaggerOperationFilterTests
         var state = new ApiVersionEndpointHeaderState(
             new ApiVersion(1, 0),
             Sunset: sunsetPolicy,
-            Deprecation: new DeprecationPolicy());
+            Deprecation: new WolverineDeprecationPolicy());
         var metadata = new List<object> { state };
         var operation = MakeOperation();
 

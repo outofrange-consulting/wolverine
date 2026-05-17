@@ -104,7 +104,7 @@ internal sealed class ApiVersioningPolicy : IHttpPolicy
             chain.ApiVersion = resolution.Version;
 
             if (resolution.IsDeprecated && chain.DeprecationPolicy is null)
-                chain.DeprecationPolicy = new DeprecationPolicy();
+                chain.DeprecationPolicy = new WolverineDeprecationPolicy();
         }
     }
 
@@ -285,26 +285,11 @@ internal sealed class ApiVersioningPolicy : IHttpPolicy
     /// </remarks>
     private void AttachMetadata(IReadOnlyList<HttpChain> chains)
     {
-        // Group versioned chains by (verb, route-without-version-prefix). Two chains in the same
-        // group are siblings — typically multi-version clones, but also any chains that happen to
-        // share a verb and the post-strip route. Each clone's model advertises the full sibling set
-        // as supported / deprecated so the response header consumers see the union.
-        var siblingsByKey = new Dictionary<(string Verb, string Route), List<HttpChain>>();
-        foreach (var chain in chains)
-        {
-            if (chain.ApiVersion is null) continue;
-
-            var key = (
-                Verb: chain.HttpMethods.FirstOrDefault() ?? "",
-                Route: StripVersionPrefix(chain));
-
-            if (!siblingsByKey.TryGetValue(key, out var bucket))
-            {
-                bucket = new List<HttpChain>();
-                siblingsByKey[key] = bucket;
-            }
-            bucket.Add(chain);
-        }
+        // Sibling computation removed: in the package-backed model the matcher policy's
+        // ApiVersionMetadataCollator aggregates supported / deprecated versions across all
+        // endpoints participating in the same routing node at request time. Each chain only
+        // needs to declare its own version on ApiVersionMetadata; the package emits the
+        // api-supported-versions and api-deprecated-versions headers from the aggregated set.
 
         foreach (var chain in chains)
         {
@@ -338,24 +323,21 @@ internal sealed class ApiVersioningPolicy : IHttpPolicy
             var groupName = _options.OpenApi.DocumentNameStrategy(chain.ApiVersion);
             chain.Metadata.WithGroupName(groupName);
 
-            var key = (
-                Verb: chain.HttpMethods.FirstOrDefault() ?? "",
-                Route: StripVersionPrefix(chain));
-
-            var siblings = siblingsByKey[key];
-            var supported = siblings
-                .Where(s => s.DeprecationPolicy is null)
-                .Select(s => s.ApiVersion!)
-                .Distinct()
-                .ToArray();
-            var deprecated = siblings
-                .Where(s => s.DeprecationPolicy is not null)
-                .Select(s => s.ApiVersion!)
-                .Distinct()
-                .ToArray();
+            // Each clone's model declares ONLY its own version. The package's
+            // ApiVersionMatcherPolicy aggregates supported / deprecated versions across siblings
+            // at request time via its internal ApiVersionMetadataCollator (see BuildJumpTable),
+            // so emitting api-supported-versions and api-deprecated-versions does not require
+            // Wolverine to pre-compute a sibling union into each chain's metadata. Baking the
+            // sibling union into SupportedApiVersions actively breaks the matcher policy —
+            // ApiVersionMetadata.MappingTo(otherVersion) returns Implicit when otherVersion is in
+            // SupportedApiVersions, and the matcher then treats every clone as a valid candidate
+            // for every requested version.
+            var ownVersion = new[] { chain.ApiVersion };
+            var supported = chain.DeprecationPolicy is null ? ownVersion : Array.Empty<ApiVersion>();
+            var deprecated = chain.DeprecationPolicy is null ? Array.Empty<ApiVersion>() : ownVersion;
 
             var model = new ApiVersionModel(
-                declaredVersions: new[] { chain.ApiVersion },
+                declaredVersions: ownVersion,
                 supportedVersions: supported,
                 deprecatedVersions: deprecated,
                 advertisedVersions: Array.Empty<ApiVersion>(),
@@ -404,6 +386,30 @@ internal sealed class ApiVersioningPolicy : IHttpPolicy
     /// </summary>
     private void AttachHeaderState(IReadOnlyList<HttpChain> chains)
     {
+        // Sibling key: (verb, route-without-version-prefix) — the same key the previous
+        // implementation used to pre-compute the union for ApiVersionMetadata. We continue to
+        // build this union here because the package's DefaultApiVersionReporter does not emit
+        // api-supported-versions on the success path, only on the error path. Wolverine writes
+        // the headers itself from the union baked into ApiVersionEndpointHeaderState, leaving
+        // the per-chain ApiVersionMetadata.SupportedApiVersions narrow (own version only) so the
+        // matcher policy keeps disambiguating clones correctly.
+        var siblingsByKey = new Dictionary<(string Verb, string Route), List<HttpChain>>();
+        foreach (var chain in chains)
+        {
+            if (chain.ApiVersion is null) continue;
+
+            var key = (
+                Verb: chain.HttpMethods.FirstOrDefault() ?? "",
+                Route: StripVersionPrefix(chain));
+
+            if (!siblingsByKey.TryGetValue(key, out var bucket))
+            {
+                bucket = new List<HttpChain>();
+                siblingsByKey[key] = bucket;
+            }
+            bucket.Add(chain);
+        }
+
         foreach (var chain in chains)
         {
             if (chain.ApiVersion is null || !RequiresHeaderEmission(chain))
@@ -412,8 +418,28 @@ internal sealed class ApiVersioningPolicy : IHttpPolicy
             if (!_headerStateChains.Add(chain))
                 continue;
 
-            // Per-chain state lives on endpoint metadata so the singleton writer can read it at request time.
-            var state = new ApiVersionEndpointHeaderState(chain.ApiVersion, chain.SunsetPolicy, chain.DeprecationPolicy);
+            var key = (
+                Verb: chain.HttpMethods.FirstOrDefault() ?? "",
+                Route: StripVersionPrefix(chain));
+
+            var siblings = siblingsByKey[key];
+            var supported = siblings
+                .Where(s => s.DeprecationPolicy is null)
+                .Select(s => s.ApiVersion!)
+                .Distinct()
+                .ToArray();
+            var deprecated = siblings
+                .Where(s => s.DeprecationPolicy is not null)
+                .Select(s => s.ApiVersion!)
+                .Distinct()
+                .ToArray();
+
+            var state = new ApiVersionEndpointHeaderState(
+                chain.ApiVersion,
+                chain.SunsetPolicy,
+                chain.DeprecationPolicy,
+                supported,
+                deprecated);
             chain.Metadata.WithMetadata(state);
         }
     }

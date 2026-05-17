@@ -5,23 +5,34 @@ breaking existing clients. Versioned endpoints coexist at separate URL prefixes 
 carry the correct OpenAPI metadata, and can emit RFC 9745 `Deprecation` and RFC 8594 `Sunset` response headers to
 signal planned end-of-life to callers.
 
-The feature depends on the `Asp.Versioning.Abstractions` 10.x NuGet package — the thin, framework-neutral abstraction
-layer. It does **not** require `Asp.Versioning.Http` (the ASP.NET Core-specific middleware pack). Wolverine drives
-versioning entirely through its own `IHttpPolicy` pipeline, so there is no conflict with an existing
-`AddApiVersioning()` registration, and no additional ASP.NET Core middleware is needed.
+The feature depends on the `Asp.Versioning.Abstractions` 8.x NuGet package (the framework-neutral
+abstraction layer) **and** on `Asp.Versioning.Http` 8.x (the ASP.NET Core matcher policy and reader pipeline).
+`AddWolverineHttp()` registers `services.AddApiVersioning()` for you and Wolverine bridges its options
+into `Asp.Versioning.ApiVersioningOptions` at request time — your application code does not need to call
+`AddApiVersioning` itself.
 
 ::: info
-This release supports **URL-segment versioning** (e.g. `/v1/...`, `/v2/...`) and multi-version handlers
-via repeated `[ApiVersion]` attributes or `[MapToApiVersion]`. See [Multi-version handlers](#multi-version-handlers).
+Two version-source flavours are supported:
+- **URL-segment versioning** (e.g. `/v1/...`, `/v2/...`) — the default. See [URL-Segment Versioning](#url-segment-versioning).
+- **Header / query-string versioning** — opt-in via `ReadVersionFromHeader(...)` / `ReadVersionFromQueryString(...)`.
+  See [Header / Query-String Versioning](#header-query-string-versioning).
+
+Both can be combined with multi-version handlers via repeated `[ApiVersion]` attributes or `[MapToApiVersion]`.
+See [Multi-version handlers](#multi-version-handlers).
 :::
 
 ## Quick Start
 
-**1. Add the package** (if not already present via `WolverineFx.Http`):
+**1. Add the package** (transitively pulled in by `WolverineFx.Http`):
 
 ```bash
-dotnet add package Asp.Versioning.Abstractions
+dotnet add package WolverineFx.Http
 ```
+
+`WolverineFx.Http` depends on `Asp.Versioning.Abstractions` 8.x and `Asp.Versioning.Http` 8.x. Application
+code does not need to call `services.AddApiVersioning(...)` — `AddWolverineHttp()` does it for you and
+bridges Wolverine's options into `Asp.Versioning.ApiVersioningOptions` lazily, so configuration applied
+inside `MapWolverineEndpoints` is honoured.
 
 **2. Decorate your endpoint class or method:**
 
@@ -213,6 +224,70 @@ opts.UseApiVersioning(v =>
 
 For date-based versions where `MajorVersion` is `null`, the default formatter falls back to `ApiVersion.ToString()`,
 which may include hyphens (e.g. `2024-01-01`). Override the formatter if your URL scheme needs a different shape.
+
+## Header / Query-String Versioning
+
+In addition to URL-segment versioning, Wolverine can read the requested API version from one or more HTTP
+headers or query-string parameters at request time. When configured, multiple endpoints can share the same
+route — `Asp.Versioning.Http`'s `ApiVersionMatcherPolicy` reads the request and picks the right clone.
+
+### Header source
+
+```csharp
+opts.UseApiVersioning(v =>
+{
+    // Turn off URL-segment versioning so /orders is shared across versions.
+    v.UrlSegmentPrefix = null;
+    v.ReadVersionFromHeader("X-Api-Version");
+});
+```
+
+With this configuration a request to `/orders` with header `X-Api-Version: 2.0` is routed to the `v2.0`
+handler at `/orders`; a request without the header resolves to a 400 unless `AssumeDefaultVersionWhenUnspecified`
+is enabled (see below).
+
+### Query-string source
+
+```csharp
+opts.UseApiVersioning(v =>
+{
+    v.UrlSegmentPrefix = null;
+    v.ReadVersionFromQueryString("api-version");
+});
+```
+
+`/orders?api-version=2.0` now reaches the v2 handler.
+
+### Combining sources
+
+Call both helpers to accept either form. The package's reader treats them as a composite —
+disagreement between header and query string yields a 400 `AmbiguousApiVersion` response.
+
+```csharp
+opts.UseApiVersioning(v =>
+{
+    v.UrlSegmentPrefix = null;
+    v.ReadVersionFromHeader("X-Api-Version");
+    v.ReadVersionFromQueryString("api-version");
+});
+```
+
+### Default version when nothing is supplied
+
+By default a versioned request without a version reader value returns 400. Opt into an implicit version with:
+
+```csharp
+opts.UseApiVersioning(v =>
+{
+    v.UrlSegmentPrefix = null;
+    v.ReadVersionFromHeader("X-Api-Version");
+    v.AssumeDefaultVersionWhenUnspecified = true;
+    v.DefaultVersion = new ApiVersion(1, 0);
+});
+```
+
+This is independent of `UnversionedPolicy.AssignDefault` — the former drives request-time fallback, the
+latter drives bootstrap-time handling of endpoints that don't declare `[ApiVersion]`.
 
 ## Unversioned-Endpoint Policy
 

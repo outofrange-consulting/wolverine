@@ -19,7 +19,9 @@ public class WolverineApiVersioningOpenApiOptionsTests
     public void default_strategy_falls_back_for_date_versions()
     {
         var opts = new WolverineApiVersioningOpenApiOptions();
-        var dateVersion = new ApiVersion(new DateTime(2024, 11, 1));
+        // Asp.Versioning.Abstractions 8.x ApiVersion takes DateOnly, not DateTime, for date-based
+        // versions. The v10 binding to DateTime is gone in v8.
+        var dateVersion = new ApiVersion(new DateOnly(2024, 11, 1));
 
         var result = opts.DocumentNameStrategy(dateVersion);
 

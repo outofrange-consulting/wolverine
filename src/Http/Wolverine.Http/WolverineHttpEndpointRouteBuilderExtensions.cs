@@ -1,5 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
+using Asp.Versioning;
 using JasperFx;
 using JasperFx.CodeGeneration;
 using JasperFx.Core.IoC;
@@ -183,13 +184,24 @@ public static class WolverineHttpEndpointRouteBuilderExtensions
         // shipped the richer reader yet.
         services.AddSingleton<IHttpGraphUsageSource, HttpGraphUsageSource>();
 
-        // Registered unconditionally — harmless when no versioned endpoint uses it.
+        // Registered unconditionally — harmless when no versioned endpoint uses it. The writer
+        // emits the merged api-supported-versions header plus the RFC 9745 Deprecation /
+        // RFC 8594 Sunset / RFC 8288 Link headers. The package's DefaultApiVersionReporter is
+        // disabled in ConfigureAspVersioningFromWolverine because it only fires on the error path
+        // and splits supported / deprecated into two headers, so Wolverine owns header emission.
         services.AddSingleton<ApiVersionHeaderWriter>(sp =>
         {
             var httpOptions = sp.GetRequiredService<WolverineHttpOptions>();
             var versioningOptions = httpOptions.ApiVersioning ?? new WolverineApiVersioningOptions();
             return new ApiVersionHeaderWriter(versioningOptions);
         });
+
+        // AddApiVersioning brings the package's ApiVersionMatcherPolicy, which selects the right
+        // clone at request time based on the configured IApiVersionReader. It is metadata-activated
+        // — apps that never call UseApiVersioning() pay the cost of a few service registrations and
+        // nothing more.
+        services.AddApiVersioning();
+        services.AddSingleton<IConfigureOptions<ApiVersioningOptions>, ConfigureAspVersioningFromWolverine>();
 
         services.ConfigureWolverine(opts =>
         {

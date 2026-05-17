@@ -57,33 +57,10 @@ internal sealed class DeprecationPolicyBuilder : IWolverineDeprecationPolicyBuil
 
     private void CommitPolicy()
     {
-        DeprecationPolicy policy;
-
-        if (_date.HasValue && _links.Count > 0)
-        {
-            policy = new DeprecationPolicy(_date.Value, _links[0]);
-            for (var i = 1; i < _links.Count; i++)
-            {
-                policy.Links.Add(_links[i]);
-            }
-        }
-        else if (_date.HasValue)
-        {
-            policy = new DeprecationPolicy(_date.Value);
-        }
-        else if (_links.Count > 0)
-        {
-            policy = new DeprecationPolicy(_links[0]);
-            for (var i = 1; i < _links.Count; i++)
-            {
-                policy.Links.Add(_links[i]);
-            }
-        }
-        else
-        {
-            policy = new DeprecationPolicy();
-        }
-
-        _options.DeprecationPolicies[_version] = policy;
+        // Wolverine's first-party policy record carries everything we need (date + link list).
+        // The full list is captured up front rather than appended after construction, which keeps
+        // the type immutable and easier to reason about than the package's mutable variant.
+        var links = _links.Count == 0 ? Array.Empty<LinkHeaderValue>() : _links.ToArray();
+        _options.DeprecationPolicies[_version] = new WolverineDeprecationPolicy(_date, links);
     }
 }

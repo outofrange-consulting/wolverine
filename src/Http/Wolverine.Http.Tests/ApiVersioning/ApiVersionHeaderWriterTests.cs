@@ -81,22 +81,25 @@ public class ApiVersionHeaderWriterTests
         ctx.Response.Headers.ContainsKey("Link").ShouldBeFalse();
     }
 
-    // 2 — api-supported-versions is union of sunset + deprecation policy keys, sorted ascending
+    // 2 — api-supported-versions is the merged sibling union baked into the per-chain header state.
+    // Previous releases derived the header from options.SunsetPolicies/DeprecationPolicies as a fallback
+    // for chains that lacked per-endpoint metadata; that path was removed when ApiVersioningPolicy
+    // started always populating the sibling lists on ApiVersionEndpointHeaderState.
     [Fact]
-    public async Task api_supported_versions_includes_sunset_and_deprecation_keys()
+    public async Task api_supported_versions_merges_sibling_supported_and_deprecated()
     {
         var date1 = new DateTimeOffset(2027, 1, 1, 0, 0, 0, TimeSpan.Zero);
-        var date2 = new DateTimeOffset(2028, 1, 1, 0, 0, 0, TimeSpan.Zero);
 
         var opts = new WolverineApiVersioningOptions();
         opts.Sunset("1.0").On(date1);
-        opts.Deprecate("2.0").On(date2);
 
         var writer = new ApiVersionHeaderWriter(opts);
         var state = new ApiVersionEndpointHeaderState(
             new ApiVersion(1, 0),
             opts.SunsetPolicies[new ApiVersion(1, 0)],
-            null);
+            null,
+            SiblingSupportedVersions: new[] { new ApiVersion(1, 0) },
+            SiblingDeprecatedVersions: new[] { new ApiVersion(2, 0) });
         var ctx = ContextWithState(state, writer);
 
         await writer.WriteAsync(ctx);
@@ -111,7 +114,7 @@ public class ApiVersionHeaderWriterTests
     {
         var depDate = new DateTimeOffset(2030, 6, 15, 0, 0, 0, TimeSpan.Zero);
         var opts = new WolverineApiVersioningOptions();
-        var depPolicy = new DeprecationPolicy(depDate);
+        var depPolicy = new WolverineDeprecationPolicy(depDate);
         var state = new ApiVersionEndpointHeaderState(new ApiVersion(1, 0), null, depPolicy);
         var writer = new ApiVersionHeaderWriter(opts);
         var ctx = ContextWithState(state, writer);
@@ -128,7 +131,7 @@ public class ApiVersionHeaderWriterTests
     public async Task deprecation_without_date_emits_true_token()
     {
         var opts = new WolverineApiVersioningOptions();
-        var depPolicy = new DeprecationPolicy();
+        var depPolicy = new WolverineDeprecationPolicy();
         var state = new ApiVersionEndpointHeaderState(new ApiVersion(1, 0), null, depPolicy);
         var writer = new ApiVersionHeaderWriter(opts);
         var ctx = ContextWithState(state, writer);
@@ -214,7 +217,7 @@ public class ApiVersionHeaderWriterTests
         opts.Sunset("1.0").On(date);
 
         var sunsetPolicy = opts.SunsetPolicies[new ApiVersion(1, 0)];
-        var depPolicy = new DeprecationPolicy(date);
+        var depPolicy = new WolverineDeprecationPolicy(date);
         var linkUri = new Uri("https://example.com");
         var link = new LinkHeaderValue(linkUri, "sunset");
         sunsetPolicy.Links.Add(link);
