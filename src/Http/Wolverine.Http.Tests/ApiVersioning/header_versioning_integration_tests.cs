@@ -55,6 +55,16 @@ public static class HeaderMultiCustomersEndpoint
     public static string Get() => "customers";
 }
 
+// Declares an ApiVersion parameter so the binding strategy injects the version resolved by
+// Asp.Versioning.Http's matcher policy.
+[ApiVersion("1.0")]
+[ApiVersion("2.0")]
+public static class HeaderEchoVersionEndpoint
+{
+    [WolverineGet("/hv-echo", OperationId = "HeaderEchoVersion.Get")]
+    public static string Get(ApiVersion version) => version?.ToString() ?? "none";
+}
+
 public class header_versioning_integration_tests : IAsyncDisposable, IDisposable
 {
     private IAlbaHost? _host;
@@ -317,5 +327,49 @@ public class header_versioning_integration_tests : IAsyncDisposable, IDisposable
         var header = result.Context.Response.Headers["api-supported-versions"].FirstOrDefault();
         header.ShouldNotBeNull();
         header.ShouldBe("1.0, 2.0, 3.0");
+    }
+
+    // ---------- ApiVersion parameter binding (codegen integration) ----------
+
+    [Fact]
+    public async Task api_version_parameter_is_bound_from_resolved_version()
+    {
+        var host = await Build(v => v.ReadVersionFromHeader("X-Api-Version"));
+
+        await host.Scenario(x =>
+        {
+            x.Get.Url("/hv-echo");
+            x.WithRequestHeader("X-Api-Version", "2.0");
+            x.ContentShouldBe("2.0");
+            x.StatusCodeShouldBeOk();
+        });
+
+        await host.Scenario(x =>
+        {
+            x.Get.Url("/hv-echo");
+            x.WithRequestHeader("X-Api-Version", "1.0");
+            x.ContentShouldBe("1.0");
+            x.StatusCodeShouldBeOk();
+        });
+    }
+
+    // ---------- UnsupportedApiVersionStatusCode passthrough ----------
+
+    [Fact]
+    public async Task unsupported_version_uses_configured_status_code()
+    {
+        var host = await Build(v =>
+        {
+            v.ReadVersionFromHeader("X-Api-Version");
+            v.UnsupportedApiVersionStatusCode = 404;
+        });
+
+        await host.Scenario(x =>
+        {
+            x.Get.Url("/hv-orders");
+            x.WithRequestHeader("X-Api-Version", "9.9");
+            // Default would be 400; the option forwards 404 to ApiVersioningOptions.
+            x.StatusCodeShouldBe(404);
+        });
     }
 }

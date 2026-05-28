@@ -66,6 +66,15 @@ public sealed class WolverineApiVersioningOptions
     /// </summary>
     public bool AssumeDefaultVersionWhenUnspecified { get; set; }
 
+    /// <summary>
+    /// HTTP status code returned by <c>Asp.Versioning.Http</c>'s matcher policy when a request asks
+    /// for an API version that no endpoint serves (or supplies a malformed / ambiguous version).
+    /// Forwarded to <see cref="Asp.Versioning.ApiVersioningOptions.UnsupportedApiVersionStatusCode"/>.
+    /// Defaults to <see langword="null"/>, which leaves the package default (400 Bad Request) in
+    /// place. Set to 404 to hide the existence of unsupported versions.
+    /// </summary>
+    public int? UnsupportedApiVersionStatusCode { get; set; }
+
     /// <summary>Convenience helper that adds <paramref name="headerName"/> to <see cref="VersionHeaderNames"/>.</summary>
     public WolverineApiVersioningOptions ReadVersionFromHeader(string headerName)
     {

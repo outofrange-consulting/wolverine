@@ -289,6 +289,41 @@ opts.UseApiVersioning(v =>
 This is independent of `UnversionedPolicy.AssignDefault` — the former drives request-time fallback, the
 latter drives bootstrap-time handling of endpoints that don't declare `[ApiVersion]`.
 
+### Status code for unsupported versions
+
+When a request asks for a version no endpoint serves (or supplies a malformed / ambiguous version), the
+`Asp.Versioning.Http` matcher policy returns **400 Bad Request** by default with a `ProblemDetails` body.
+Override the status code — e.g. to 404 so the existence of unsupported versions is not revealed:
+
+```csharp
+opts.UseApiVersioning(v =>
+{
+    v.ReadVersionFromHeader("X-Api-Version");
+    v.UnsupportedApiVersionStatusCode = 404;
+});
+```
+
+This forwards to `Asp.Versioning.ApiVersioningOptions.UnsupportedApiVersionStatusCode`.
+
+### Injecting the resolved version into a handler
+
+A handler method may accept an `Asp.Versioning.ApiVersion` parameter. Wolverine binds it from the version
+the matcher policy resolved for the request (URL segment, header, or query string — whichever source matched),
+read from `IApiVersioningFeature.RequestedApiVersion`:
+
+```csharp
+[ApiVersion("1.0")]
+[ApiVersion("2.0")]
+public static class OrdersEndpoint
+{
+    [WolverineGet("/orders")]
+    public static OrdersResponse Get(ApiVersion version)
+        => version.MajorVersion == 1 ? OrdersResponse.V1() : OrdersResponse.V2();
+}
+```
+
+The parameter is `null` only when versioning is not configured or the endpoint is version-neutral.
+
 ## Unversioned-Endpoint Policy
 
 When `UseApiVersioning` is active, every endpoint that lacks an `[ApiVersion]` attribute is subject to the

@@ -17,6 +17,9 @@ public partial class HttpGraph
         new AsParamatersAttributeUsage(),
         new FromFileStrategy(),
         new HttpChainParameterAttributeStrategy(),
+        // Bind ApiVersion parameters from Asp.Versioning.Http's resolved feature before the
+        // service-location fallback would otherwise try (and fail) to resolve ApiVersion from DI.
+        new ApiVersioning.ApiVersionParameterStrategy(),
         new FromServicesParameterStrategy(),
         new MessageBusStrategy(),
         new HttpContextElements(),

@@ -85,6 +85,11 @@ internal sealed class ConfigureAspVersioningFromWolverine : IConfigureOptions<Ap
         options.AssumeDefaultVersionWhenUnspecified =
             wolverine.AssumeDefaultVersionWhenUnspecified || !wolverine.HasNonUrlVersionSource;
 
+        if (wolverine.UnsupportedApiVersionStatusCode is { } statusCode)
+        {
+            options.UnsupportedApiVersionStatusCode = statusCode;
+        }
+
         // The package's DefaultApiVersionReporter is intentionally disabled here. The reporter
         // (a) only fires on the error path — UnspecifiedApiVersionEndpoint /
         // UnsupportedApiVersionEndpoint via ApiVersionRequestDelegateExtensions.TryReportApiVersions —
