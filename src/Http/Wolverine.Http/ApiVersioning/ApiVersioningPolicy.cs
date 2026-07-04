@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using Asp.Versioning;
 using JasperFx;
 using JasperFx.CodeGeneration;
@@ -16,16 +17,41 @@ namespace Wolverine.Http.ApiVersioning;
 ///   <item><description>B — Apply <see cref="UnversionedPolicy"/> to chains that remain unversioned.</description></item>
 ///   <item><description>C — Attach sunset / deprecation policies from <see cref="WolverineApiVersioningOptions"/>.</description></item>
 ///   <item><description>D — Reject duplicate (verb, route, version) triples.</description></item>
-///   <item><description>E — Rewrite route patterns with the URL-segment version prefix.</description></item>
+///   <item><description>E — Place the version in the route: substitute an inline <c>{version:apiVersion}</c> / <c>{apiVersion}</c> token in place, or otherwise prepend the URL-segment version prefix.</description></item>
 ///   <item><description>F — Attach group-name and <c>Asp.Versioning.ApiVersionMetadata</c> to the endpoint.</description></item>
 ///   <item><description>G — Attach the per-chain header state metadata read by the writer at request time.</description></item>
 /// </list>
 /// </summary>
 internal sealed class ApiVersioningPolicy : IHttpPolicy
 {
+    /// <summary>
+    /// Matches an inline API-version route token — either the ASP.NET Core convention
+    /// <c>{version:apiVersion}</c> (any parameter name carrying the <c>apiVersion</c> route
+    /// constraint) or the bare <c>{apiVersion}</c> parameter. Optional defaults / extra constraints /
+    /// nullability after the name are tolerated (e.g. <c>{version:apiVersion=1.0}</c>,
+    /// <c>{version:apiVersion?}</c>). The whole token is replaced with the concrete version string at
+    /// bootstrap, so the constraint never needs to be registered with ASP.NET Core routing.
+    /// </summary>
+    private static readonly Regex InlineVersionToken = new(
+        @"\{\s*(?:apiVersion|[A-Za-z_][A-Za-z0-9_]*\s*:\s*apiVersion)\b[^{}]*\}",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
     private readonly WolverineApiVersioningOptions _options;
     private readonly HashSet<HttpChain> _processedChains = new();
     private readonly HashSet<HttpChain> _headerStateChains = new();
+
+    /// <summary>
+    /// The pre-rewrite ("logical") route captured for every versioned chain before Step E mutates it.
+    /// Used by <see cref="AttachMetadata"/> to group sibling clones after their routes diverge.
+    /// </summary>
+    private readonly Dictionary<HttpChain, string> _logicalRoutes = new();
+
+    /// <summary>
+    /// Chains whose declared route embeds an inline API-version token (see <see cref="InlineVersionToken"/>).
+    /// These are rewritten in place and exempt from the URL-segment prefix. Membership is captured once
+    /// (from the pre-rewrite route) so it stays stable if <see cref="Apply"/> runs more than once.
+    /// </summary>
+    private readonly HashSet<HttpChain> _inlineChains = new();
 
     /// <summary>
     /// Chains for which Step G attached <see cref="ApiVersionEndpointHeaderState"/> metadata, exposed
@@ -211,12 +237,19 @@ internal sealed class ApiVersioningPolicy : IHttpPolicy
         }
     }
 
-    /// <summary>Step E — prepend the URL-segment version prefix to every versioned chain.</summary>
+    /// <summary>Step E — resolve where the version lives in the route. A chain whose declared route
+    /// already embeds an inline <c>{version:apiVersion}</c> / <c>{apiVersion}</c> token (the ASP.NET
+    /// Core convention) has that token substituted in place with the concrete version and is exempt
+    /// from the URL-segment prefix — the route is self-describing. Every other versioned chain gets
+    /// the configured <see cref="WolverineApiVersioningOptions.UrlSegmentPrefix"/> prepended. Inline
+    /// substitution runs regardless of the prefix setting, so it also works in header / query-string
+    /// (no-prefix) mode. Because the token is replaced with a literal path segment, every OpenAPI
+    /// generator (Microsoft.AspNetCore.OpenApi, NSwag, Swashbuckle) sees a plain versioned path with
+    /// no lingering <c>{version}</c> path parameter.</summary>
     private void RewriteRoutes(IReadOnlyList<HttpChain> chains)
     {
-        if (_options.UrlSegmentPrefix is null)
-            return;
-
+        CaptureLogicalRoutes(chains);
+        ValidateInlineTokens(chains);
         ValidateUrlSegmentPrefix(chains);
 
         foreach (var chain in chains)
@@ -224,16 +257,88 @@ internal sealed class ApiVersioningPolicy : IHttpPolicy
             if (chain.ApiVersion is null || chain.RoutePattern is null)
                 continue;
 
-            RewriteRouteForChain(chain);
+            // Scenario 3 — the version lives directly in the route template. Substitute and stop:
+            // applying the URL-segment prefix on top would double-prefix a self-describing route.
+            if (_inlineChains.Contains(chain))
+            {
+                RewriteInlineVersionToken(chain);
+                continue;
+            }
+
+            // Scenario 1 — prepend the configured URL-segment prefix.
+            // Scenario 2 — UrlSegmentPrefix is null: leave the route untouched (header/query versioning).
+            if (_options.UrlSegmentPrefix is not null)
+                RewriteRouteForChain(chain);
         }
+    }
+
+    /// <summary>Records each versioned chain's pre-rewrite ("logical") route and flags the ones that
+    /// carry an inline version token. Sibling clones share the logical route string — for prefix /
+    /// no-prefix modes it is the declared route (e.g. <c>/orders</c>); for inline-token routes it
+    /// still contains the un-substituted token (identical across every version of that route), so
+    /// clones group together in <see cref="AttachMetadata"/> even after their live routes diverge.</summary>
+    private void CaptureLogicalRoutes(IReadOnlyList<HttpChain> chains)
+    {
+        foreach (var chain in chains)
+        {
+            if (chain.ApiVersion is null || chain.RoutePattern is null)
+                continue;
+
+            var raw = chain.RoutePattern.RawText ?? string.Empty;
+
+            // TryAdd so a repeated Apply() keeps the true pre-rewrite route captured on the first pass.
+            if (_logicalRoutes.TryAdd(chain, raw) && InlineVersionToken.IsMatch(raw))
+                _inlineChains.Add(chain);
+        }
+    }
+
+    /// <summary>Fails fast when a route embeds an inline <c>apiVersion</c> token but no version was
+    /// resolved for the chain (unversioned pass-through or <c>[ApiVersionNeutral]</c>). There is no
+    /// version to substitute, so the token would reach ASP.NET Core routing verbatim and fault with an
+    /// opaque "route constraint 'apiVersion' not found" — a clear startup error is far friendlier.</summary>
+    private static void ValidateInlineTokens(IReadOnlyList<HttpChain> chains)
+    {
+        foreach (var chain in chains)
+        {
+            if (chain.ApiVersion is not null || chain.RoutePattern is null)
+                continue;
+
+            var route = chain.RoutePattern.RawText ?? string.Empty;
+            if (!InlineVersionToken.IsMatch(route))
+                continue;
+
+            throw new InvalidOperationException(
+                $"Endpoint '{Identify(chain)}' has a route ('{route}') that embeds an inline API-version " +
+                "token but no API version could be resolved for it. Declare a version with [ApiVersion] " +
+                "or [MapToApiVersion], or remove the inline version token from the route.");
+        }
+    }
+
+    /// <summary>Substitutes the inline version token in <paramref name="chain"/>'s route with the
+    /// concrete version string from <see cref="WolverineApiVersioningOptions.UrlSegmentVersionFormatter"/>.
+    /// Idempotent: once substituted the token is gone, so a second pass finds nothing to replace.</summary>
+    private void RewriteInlineVersionToken(HttpChain chain)
+    {
+        var route = chain.RoutePattern!.RawText ?? string.Empty;
+        if (!InlineVersionToken.IsMatch(route))
+            return; // already substituted on a previous Apply()
+
+        var versionSegment = _options.UrlSegmentVersionFormatter(chain.ApiVersion!);
+        chain.RoutePattern = RoutePatternFactory.Parse(InlineVersionToken.Replace(route, versionSegment));
     }
 
     private void ValidateUrlSegmentPrefix(IReadOnlyList<HttpChain> chains)
     {
-        if (_options.UrlSegmentPrefix!.Contains("{version}", StringComparison.Ordinal))
+        if (_options.UrlSegmentPrefix is null)
             return;
 
-        if (!chains.Any(c => c.ApiVersion is not null))
+        if (_options.UrlSegmentPrefix.Contains("{version}", StringComparison.Ordinal))
+            return;
+
+        // Only chains that will actually consume the prefix matter — a chain whose route embeds an
+        // inline version token is rewritten in place and never touches the prefix. Keyed off the
+        // captured inline-chain set so the result stays stable across repeated Apply() calls.
+        if (!chains.Any(c => c.ApiVersion is not null && !_inlineChains.Contains(c)))
             return;
 
         throw new InvalidOperationException(
@@ -296,7 +401,7 @@ internal sealed class ApiVersioningPolicy : IHttpPolicy
 
             var key = (
                 Verb: chain.HttpMethods.FirstOrDefault() ?? "",
-                Route: StripVersionPrefix(chain));
+                Route: LogicalRoute(chain));
 
             if (!siblingsByKey.TryGetValue(key, out var bucket))
             {
@@ -340,7 +445,7 @@ internal sealed class ApiVersioningPolicy : IHttpPolicy
 
             var key = (
                 Verb: chain.HttpMethods.FirstOrDefault() ?? "",
-                Route: StripVersionPrefix(chain));
+                Route: LogicalRoute(chain));
 
             var siblings = siblingsByKey[key];
             var supported = siblings
@@ -370,22 +475,16 @@ internal sealed class ApiVersioningPolicy : IHttpPolicy
         }
     }
 
-    /// <summary>Removes the URL-segment version prefix (if one was injected by <see cref="RewriteRoutes"/>)
-    /// from the chain's current route, returning the trailing portion that is identical across all
-    /// sibling versions. When <see cref="WolverineApiVersioningOptions.UrlSegmentPrefix"/> is null
-    /// the original route is returned unchanged.</summary>
-    private string StripVersionPrefix(HttpChain chain)
-    {
-        var route = chain.RoutePattern?.RawText ?? string.Empty;
-        if (_options.UrlSegmentPrefix is null) return route;
-
-        var prefix = BuildExpectedPrefix(chain.ApiVersion!);
-        if (route == prefix) return string.Empty;
-        if (route.StartsWith(prefix + "/", StringComparison.Ordinal))
-            return route.Substring(prefix.Length);
-
-        return route;
-    }
+    /// <summary>Returns the pre-rewrite ("logical") route captured for the chain in
+    /// <see cref="CaptureLogicalRoutes"/>. Sibling clones share this value regardless of which
+    /// version-placement mode (inline token, URL-segment prefix, or none) rewrote their live route,
+    /// so it is the stable key for grouping siblings that publish the same logical endpoint. Falls
+    /// back to the current route for any chain that was never captured (defensive; should not occur
+    /// for versioned chains).</summary>
+    private string LogicalRoute(HttpChain chain)
+        => _logicalRoutes.TryGetValue(chain, out var route)
+            ? route
+            : chain.RoutePattern?.RawText ?? string.Empty;
 
     private static void EnsureExplicitOperationId(HttpChain chain)
     {

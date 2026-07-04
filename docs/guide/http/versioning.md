@@ -11,8 +11,11 @@ versioning entirely through its own `IHttpPolicy` pipeline, so there is no confl
 `AddApiVersioning()` registration, and no additional ASP.NET Core middleware is needed.
 
 ::: info
-This release supports **URL-segment versioning** (e.g. `/v1/...`, `/v2/...`) and multi-version handlers
-via repeated `[ApiVersion]` attributes or `[MapToApiVersion]`. See [Multi-version handlers](#multi-version-handlers).
+Wolverine supports **URL-segment versioning** (e.g. `/v1/...`, `/v2/...`) via a global prefix,
+**inline route versioning** (the version token embedded directly in a route template, e.g.
+`/api/v{version:apiVersion}/orders` — see [Inline Route Versioning](#inline-route-versioning)), and
+multi-version handlers via repeated `[ApiVersion]` attributes or `[MapToApiVersion]`. See
+[Multi-version handlers](#multi-version-handlers).
 :::
 
 ## Quick Start
@@ -213,6 +216,62 @@ opts.UseApiVersioning(v =>
 
 For date-based versions where `MajorVersion` is `null`, the default formatter falls back to `ApiVersion.ToString()`,
 which may include hyphens (e.g. `2024-01-01`). Override the formatter if your URL scheme needs a different shape.
+
+## Inline Route Versioning <Badge type="tip" text="6.14" />
+
+The URL-segment prefix above is a *global* convention: every versioned route is rewritten by prepending
+`UrlSegmentPrefix`. Sometimes you instead want to place the version **directly in an individual route template**,
+exactly as you would with the ASP.NET Core `Asp.Versioning` convention:
+
+```csharp
+[ApiVersion("1.0")]
+[ApiVersion("2.0")]
+public static class OrdersEndpoint
+{
+    // The version token lives inside the route template.
+    [WolverineGet("/api/v{version:apiVersion}/orders")]
+    public static OrdersResponse Get() => new(["a", "b"]);
+}
+```
+
+Wolverine detects the inline token and **substitutes it with the concrete version at bootstrap**, producing the
+live routes `/api/v1/orders` and `/api/v2/orders`. A route that carries an inline token is *self-describing*, so
+the global `UrlSegmentPrefix` is **not** also applied to it — there is no double-prefixing.
+
+Two token forms are recognised:
+
+| Token | Notes |
+|---|---|
+| `{version:apiVersion}` | The standard ASP.NET Core form (any parameter name carrying the `apiVersion` route constraint). Wolverine replaces the whole token before routing, so — unlike `Asp.Versioning.Http` — you do **not** need the `apiVersion` route constraint registered. |
+| `{apiVersion}` | A bare parameter named `apiVersion`. Handy when the same endpoint assembly is also loaded in configurations that do not enable versioning, since a bare parameter still parses as an ordinary route parameter. |
+
+The token is replaced using the same [`UrlSegmentVersionFormatter`](#version-format-in-the-url) as the prefix
+mode (major-only by default), and it works in **every** configuration:
+
+- **With a URL-segment prefix** (`UrlSegmentPrefix = "v{version}"`, the default) — inline routes bypass the prefix;
+  every other versioned route still gets it. The two styles coexist.
+- **Without a prefix** (`UrlSegmentPrefix = null`) — the inline token is still substituted, so you can mix
+  header/query-string versioning with the occasional in-route version.
+
+Multi-version handlers work as usual: the chain is expanded once per declared version and each clone has the
+token substituted with its own version.
+
+### Why every OpenAPI generator produces the correct document
+
+Because the token is replaced with a **literal path segment** at bootstrap, the route pattern that reaches
+ASP.NET Core routing (and therefore `ApiExplorer`) is a plain path such as `/api/v1/orders` with **no**
+`{version}` path parameter. Each versioned clone still carries the same `IEndpointGroupNameMetadata` and
+`Asp.Versioning.ApiVersionMetadata` as prefix-mode routes. As a result the official
+`Microsoft.AspNetCore.OpenApi` package, NSwag, and Swashbuckle all emit the concrete versioned path — regardless
+of whether you use a prefix, no prefix, or an inline route token. NSwag and Swashbuckle read the same
+`ApiExplorer` `ApiDescription` set, and `Microsoft.AspNetCore.OpenApi` reads the endpoint metadata directly;
+none of them ever sees a lingering version placeholder.
+
+::: warning A route with an inline token must resolve to a version
+If a route embeds an `apiVersion` token but the endpoint has no resolvable version (no `[ApiVersion]` /
+`[MapToApiVersion]`, or it is `[ApiVersionNeutral]`), Wolverine throws at startup — there is nothing to
+substitute, and the raw token would otherwise fault ASP.NET Core routing. Add a version, or remove the token.
+:::
 
 ## Unversioned-Endpoint Policy
 
